@@ -19,6 +19,8 @@ def project(tmp_path, monkeypatch, loans):
     monkeypatch.setattr(C, "MLFLOW_TRACKING_URI", f"sqlite:///{(tmp_path / 'mlflow.db').as_posix()}")
     monkeypatch.setattr(C, "MIN_ROC_AUC", 0.80)          # ข้อมูลสังเคราะห์เล็ก ใช้เกณฑ์ที่เหมาะกับมัน
     monkeypatch.setattr(C, "MIN_RECALL_REJECTED", 0.70)
+    # ด่าน latency (25 ms) วัดเวลาจริง เครื่อง CI หรือการวัด coverage ทำให้ช้าได้ → ผ่อนในเทสต์ที่ไม่ได้ทดสอบ latency
+    monkeypatch.setattr(C, "MAX_P95_LATENCY_MS", 1000.0)
     monkeypatch.setattr(steps, "CANDIDATES", {"logreg": steps.CANDIDATES["logreg"]})
     return tmp_path
 

@@ -128,11 +128,23 @@ def load_with_retry(attempts: int = 30, wait_s: float = 10) -> None:
             time.sleep(wait_s)
 
 
+def gray_zone(threshold: float) -> tuple[float, float]:
+    """ขอบล่าง/บนของโซนก้ำกึ่งรอบ threshold (±GRAY_ZONE)
+
+    แต่ละฝั่งกว้างได้ไม่เกินครึ่งหนึ่งของที่เหลือถึง 0 หรือ 1 — ไม่งั้นเมื่อ threshold สูง (เช่น 0.92)
+    ขอบบนจะเป็น 1.02 และจะไม่มีคำขอไหนได้ AUTO_APPROVE เลย (เจอจริงหลัง retrain)
+    """
+    up = min(C.GRAY_ZONE, (1 - threshold) / 2)
+    down = min(C.GRAY_ZONE, threshold / 2)
+    return threshold - down, threshold + up
+
+
 def decide(p: float, threshold: float) -> str:
     """Cascade: มั่นใจ → ตัดสินอัตโนมัติ, ก้ำกึ่ง → ส่งเจ้าหน้าที่"""
-    if p >= threshold + C.GRAY_ZONE:
+    low, high = gray_zone(threshold)
+    if p >= high:
         return "AUTO_APPROVE"
-    if p < threshold - C.GRAY_ZONE:
+    if p < low:
         return "AUTO_REJECT"
     return "MANUAL_REVIEW"
 
