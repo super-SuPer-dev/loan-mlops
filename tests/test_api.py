@@ -42,6 +42,16 @@ def test_predict_rejects_bad_request(loaded, loans):
     assert loaded.post("/predict", data="not json").status_code == 400
 
 
+def test_cascade_can_auto_approve_with_high_threshold():
+    """threshold สูง (0.92 หลัง retrain จริง) ต้องยังมีทางได้ AUTO_APPROVE — เดิมขอบบนเป็น 1.02"""
+    low, high = api.gray_zone(0.92)
+    assert high < 1.0 and low < 0.92 < high
+    assert api.decide(0.97, 0.92) == "AUTO_APPROVE"
+    assert api.decide(0.93, 0.92) == "MANUAL_REVIEW"
+    assert api.decide(0.50, 0.92) == "AUTO_REJECT"
+    assert api.gray_zone(0.5) == (0.4, 0.6)                 # threshold กลาง ๆ ยังเป็น ±0.10 เหมือนเดิม
+
+
 def test_batch_and_metrics(loaded, loans):
     rows = loans.drop(columns=[F.TARGET]).head(5).to_dict(orient="records")
     r = loaded.post("/predict/batch", json=rows)
