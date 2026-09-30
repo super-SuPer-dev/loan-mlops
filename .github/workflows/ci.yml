@@ -1,0 +1,138 @@
+# CI/CD ของโปรเจกต์ (ต่อยอด ci.yml ของ Lab 9) — ตรวจ 3 ด้านตามโจทย์ + ส่งมอบ image
+#
+#   1. code-quality    ruff + pytest (ข้อมูลสังเคราะห์: การแปลงข้อมูล, schema, API, registry/rollback)
+#   2. data-validation ดาวน์โหลดข้อมูลจริงจาก Kaggle แล้วตรวจกับ schema (ข้อมูลเสียต้องถูกจับได้)
+#   3. model-quality   เทรนบนข้อมูลจริง แล้วต้องผ่านด่านตรวจทุกข้อใน src/config.py
+#   4. dag-tests       build image ของ Airflow แล้วทดสอบ DAG ข้างใน (import ได้, โครงสร้างถูก)
+#   5. deliver         (เฉพาะ push เข้า main) build image ของ API แล้ว push ขึ้น GitHub Container Registry
+#
+# job ไหนแดง → PR merge ไม่ได้ (ตั้ง branch protection ให้ require ทุก job ใน Settings > Branches)
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:                 # ปุ่ม Run workflow ในหน้า Actions
+
+permissions:
+  contents: read                     # ให้สิทธิ์เท่าที่จำเป็น
+
+env:
+  MLFLOW_DISABLE_TELEMETRY: "true"
+  MLFLOW_DISABLE_AGENT_HINT: "1"
+  PYTHONIOENCODING: utf-8
+
+jobs:
+  # ---------------------------------------------------------------- ด้านที่ 1: คุณภาพโค้ด
+  code-quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      # uv ติดตั้ง Python + ไลบรารีตาม uv.lock เป๊ะ ๆ (--frozen = ห้ามแก้ lock) → ได้เวอร์ชันเดียวกับเครื่องเรา
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Install dependencies
+        run: uv sync --frozen
+      - name: Lint (ruff)
+        run: uv run ruff check .
+      - name: Unit tests (data / model / API)
+        run: uv run pytest -v --junitxml=report-unit.xml
+      - name: Upload test report      # หลักฐานแนบรายงาน เก็บไว้แม้ job แดง
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: report-unit
+          path: report-unit.xml
+
+  # ---------------------------------------------------------------- ด้านที่ 2: ความถูกต้องของข้อมูล
+  data-validation:
+    needs: code-quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --frozen
+      - name: Cache Kaggle dataset    # ไม่ต้องดาวน์โหลดใหม่ทุกครั้ง
+        uses: actions/cache@v4
+        with:
+          path: data/raw
+          key: kaggle-loan-approval-2026-v1
+      - name: Validate real data against schema
+        run: uv run python scripts/ci_checks.py data
+
+  # ---------------------------------------------------------------- ด้านที่ 3: เกณฑ์คุณภาพของโมเดล
+  model-quality:
+    needs: data-validation           # ข้อมูลไม่ผ่าน ไม่ต้องเสียเวลาเทรน
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --frozen
+      - uses: actions/cache@v4
+        with:
+          path: data/raw
+          key: kaggle-loan-approval-2026-v1
+      - name: Train on real data and check the gate
+        run: uv run python scripts/ci_checks.py model
+      - name: Upload gate result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: model-gate
+          path: .ci/model_gate.json
+
+  # ---------------------------------------------------------------- ทดสอบ DAG ใน image จริงของ Airflow
+  dag-tests:
+    needs: code-quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Airflow image
+        run: docker build -f docker/airflow.Dockerfile -t loan-mlops/airflow:ci .
+      - name: DAG tests inside the image
+        run: |
+          docker run --rm -v "$PWD:/opt/project" -w /opt/project \
+            -e PYTHONPATH=/opt/project -e ML_PROJECT_ROOT=/opt/project \
+            --entrypoint python loan-mlops/airflow:ci -m pytest tests/test_dags.py -v -p no:cacheprovider
+
+  # ---------------------------------------------------------------- ส่งมอบ (CD)
+  deliver:
+    needs: [model-quality, dag-tests]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write                # สิทธิ์ push image ขึ้น ghcr.io ของ repo นี้
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build API image
+        run: docker build -f serving/Dockerfile -t loan-api:${{ github.sha }} .
+      - name: Smoke test (container starts and answers /health)
+        run: |
+          docker run -d --name api -p 8000:8000 loan-api:${{ github.sha }}
+          sleep 10
+          # ยังไม่มี MLflow ใน CI จึงต้องได้ 503 "loading" = โปรเซสทำงานและตอบได้ถูกต้อง
+          code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/health)
+          echo "/health → $code"; docker logs api | tail -5
+          test "$code" = "503"
+      - name: Push to GitHub Container Registry (main only)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          IMAGE=ghcr.io/$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')/loan-api
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker tag loan-api:${{ github.sha }} $IMAGE:${{ github.sha }}
+          docker tag loan-api:${{ github.sha }} $IMAGE:latest
+          docker push $IMAGE:${{ github.sha }}
+          docker push $IMAGE:latest
+          echo "pushed $IMAGE:${{ github.sha }}" >> $GITHUB_STEP_SUMMARY

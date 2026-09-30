@@ -1,0 +1,11 @@
+.venv
+.git
+**/__pycache__
+data
+include
+logs
+mlruns
+mlflow.db
+artifacts
+notebooks
+reports

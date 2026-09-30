@@ -1,0 +1,9 @@
+# ให้ Grafana รู้จัก Prometheus อัตโนมัติตอนเปิดครั้งแรก ไม่ต้องไปกดตั้งค่าเอง
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true

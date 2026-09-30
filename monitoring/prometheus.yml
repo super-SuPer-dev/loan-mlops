@@ -1,0 +1,13 @@
+# Prometheus เก็บ metric จาก Flask API ทุก 5 วินาที (แนวเดียวกับงานที่ 6 ของ Lab 10)
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s      # ตรวจกฎแจ้งเตือนทุก 5 วินาที
+
+rule_files:
+  - /etc/prometheus/alert_rules.yml
+
+scrape_configs:
+  - job_name: loan-api
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["api:8000"]

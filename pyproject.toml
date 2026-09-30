@@ -1,0 +1,29 @@
+[project]
+name = "loan-mlops"
+version = "0.1.0"
+description = "CP413008 final project: loan approval pre-screening MLOps pipeline"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "pandas>=2.2",
+    "numpy>=2.0",
+    "scipy>=1.14",
+    "scikit-learn>=1.6",
+    "joblib>=1.4",
+    "mlflow>=3.0",
+    "matplotlib>=3.9",
+    "ipykernel>=6.29",
+    "nbconvert>=7.16",
+    "flask>=3.1",
+    "prometheus-client>=0.21",
+    "requests>=2.32",
+]
+
+[dependency-groups]
+dev = ["ruff>=0.6", "pytest>=8.0"]
+
+[tool.ruff]
+line-length = 100
+extend-exclude = ["notebooks", "data", "include", "logs"]   # ตรวจเฉพาะโค้ดที่ขึ้น production
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+ignore = ["E501"]

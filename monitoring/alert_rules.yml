@@ -1,0 +1,71 @@
+# กฎแจ้งเตือน — ด้านสถานะระบบ 4 ข้อ + ด้านคุณภาพโมเดล 3 ข้อ
+# เกณฑ์ส่วนใหญ่อ่านจาก metric loan_config_threshold ที่ API ส่งออกมาจาก src/config.py
+# ทำให้โค้ดกับกฎใช้ค่าชุดเดียวกัน (หลักของ Lab 10: ประกาศเกณฑ์ไว้จุดเดียว)
+# ดูสถานะกฎได้ที่ http://localhost:9090/alerts
+
+groups:
+  # ------------------------------------------------------------------ ด้านสถานะระบบ
+  - name: loan-system
+    rules:
+      - alert: LoanApiDown
+        expr: up{job="loan-api"} == 0
+        for: 30s
+        labels: {severity: critical}
+        annotations:
+          summary: "Flask API ไม่ตอบ /metrics เกิน 30 วินาที"
+
+      - alert: LoanModelNotLoaded
+        expr: loan_api_model_loaded == 0
+        for: 1m
+        labels: {severity: critical}
+        annotations:
+          summary: "API ทำงานแต่ยังไม่มีโมเดลให้บริการ (ยังไม่มี @champion ใน MLflow)"
+
+      - alert: LoanLatencyP95AboveSLO
+        # p95 ของ /predict ในหน้าต่าง 1 นาที เทียบกับ SLO (0.2 วินาที)
+        expr: |
+          histogram_quantile(0.95, sum by (le) (rate(loan_api_latency_seconds_bucket{endpoint="/predict"}[1m])))
+            > scalar(loan_config_threshold{name="slo_p95_seconds"})
+        for: 30s
+        labels: {severity: warning}
+        annotations:
+          summary: "p95 latency {{ $value | humanizeDuration }} เกิน SLO"
+
+      - alert: LoanErrorRateAboveSLO
+        # นับเฉพาะ 5xx (ความผิดของระบบ) ไม่นับ 400 ซึ่งเป็นคำขอผิดรูปแบบจากฝั่งผู้ใช้
+        expr: |
+          sum(rate(loan_api_requests_total{status=~"5.."}[1m]))
+            / sum(rate(loan_api_requests_total[1m]))
+            > scalar(loan_config_threshold{name="slo_error_rate"})
+        for: 30s
+        labels: {severity: critical}
+        annotations:
+          summary: "5xx error rate {{ $value | humanizePercentage }} เกิน SLO"
+
+  # ------------------------------------------------------------------ ด้านคุณภาพโมเดล
+  - name: loan-model
+    rules:
+      - alert: LoanDataDrift
+        # มาจาก monitoring DAG (KS / Chi-square) — ไม่ต้องรอเฉลย
+        expr: max(loan_monitor_drift_share) > scalar(loan_config_threshold{name="drift_share_limit"})
+        labels: {severity: warning}
+        annotations:
+          summary: "Data drift: {{ $value | humanizePercentage }} ของฟีเจอร์เปลี่ยนการกระจายตัว"
+
+      - alert: LoanConceptDrift
+        # มาจาก monitoring DAG เมื่อเฉลยมาถึง — AUC ตกจากตอน deploy เกินเกณฑ์ → DAG สั่ง retrain เอง
+        expr: max(loan_monitor_auc_drop) > scalar(loan_config_threshold{name="auc_drop_limit"})
+        labels: {severity: critical}
+        annotations:
+          summary: "Concept drift: AUC ตกลง {{ $value }} จากตอน deploy"
+
+      - alert: LoanRejectRateSpike
+        # prediction drift แบบไม่ต้องรอเฉลย: สัดส่วน AUTO_REJECT ใน 5 นาทีล่าสุด
+        # ช่วงปกติ ~40-45% (วัดจาก test set) ถ้าเกิน 70% แปลว่าผู้สมัครหรือโมเดลเปลี่ยนไปมาก
+        expr: |
+          sum(rate(loan_api_decisions_total{decision="AUTO_REJECT"}[5m]))
+            / sum(rate(loan_api_decisions_total[5m])) > 0.70
+        for: 1m
+        labels: {severity: warning}
+        annotations:
+          summary: "สัดส่วนปฏิเสธอัตโนมัติ {{ $value | humanizePercentage }} สูงผิดปกติ"

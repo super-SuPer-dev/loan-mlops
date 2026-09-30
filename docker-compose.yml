@@ -1,0 +1,199 @@
+# ยกทั้งระบบด้วยคำสั่งเดียว:  docker compose up -d --build
+#
+#   postgres        ฐานข้อมูล metadata ของ Airflow
+#   airflow-init    สร้างตารางฐานข้อมูลครั้งแรก + เตรียมไฟล์ข้อมูล (ดาวน์โหลดจาก Kaggle ถ้ายังไม่มี)
+#   apiserver       หน้าเว็บ Airflow           → http://localhost:8080
+#   scheduler / dag-processor / triggerer     ส่วนประกอบของ Airflow 3 (แบบ Lab 11)
+#   mlflow          Tracking server + Model Registry → http://localhost:5050
+#   api             Flask API ให้บริการโมเดล    → http://localhost:8000/health
+#   prometheus      เก็บ metric + ตรวจกฎแจ้งเตือน → http://localhost:9090/alerts
+#   grafana         Dashboard                  → http://localhost:3000
+#
+# โปรเจกต์ทั้งโฟลเดอร์ถูก mount ไว้ที่ /opt/project ใน Airflow ทุกตัว ทำให้ DAG import src/ ได้
+
+x-airflow-common: &airflow-common
+  # image นี้ build ครั้งเดียวที่ airflow-init แล้วบริการ Airflow ทุกตัวใช้ร่วมกัน
+  # (ถ้าใส่ build ทุกตัว compose จะ build 5 รอบขนานกัน โหลดไลบรารีซ้ำ 5 เท่า)
+  image: loan-mlops/airflow:latest
+  pull_policy: never
+  environment: &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__DAGS_FOLDER: /opt/project/dags
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://apiserver:8080/execution/
+    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:-}
+    AIRFLOW__API__SECRET_KEY: ${AIRFLOW_SECRET_KEY:-loan-mlops-change-me}
+    AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_SECRET_KEY:-loan-mlops-change-me}
+    AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS: "true"   # ไม่ต้องล็อกอิน (ใช้ในห้องเรียนเท่านั้น)
+    ML_PROJECT_ROOT: /opt/project
+    PYTHONPATH: /opt/project
+    MLFLOW_TRACKING_URI: http://mlflow:5000
+    MLFLOW_DISABLE_AGENT_HINT: "1"
+    API_URL: http://api:8000
+    ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
+  volumes:
+    - .:/opt/project
+    - ./logs/airflow:/opt/airflow/logs
+  user: "${AIRFLOW_UID:-50000}:0"
+  depends_on:
+    postgres:
+      condition: service_healthy
+    mlflow:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: loan-postgres
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 10s
+      retries: 5
+      start_period: 5s
+
+  mlflow:
+    build:
+      context: .
+      dockerfile: docker/mlflow.Dockerfile
+    image: loan-mlops/mlflow:latest
+    container_name: loan-mlflow
+    command: >
+      mlflow server --host 0.0.0.0 --port 5000
+      --backend-store-uri sqlite:////mlflow/mlflow.db
+      --artifacts-destination /mlflow/artifacts --serve-artifacts
+      --allowed-hosts "mlflow,mlflow:5000,localhost,localhost:5050,127.0.0.1,127.0.0.1:5050"
+    ports:
+      - "5050:5000"   # บน Windows พอร์ต 5000 ถูกระบบจองไว้ จึงเปิดออกทางพอร์ต 5050
+    volumes:
+      - mlflow-data:/mlflow        # metadata + artifact ของโมเดลอยู่ใน volume นี้ (ลบ = ล้าง registry)
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')"]
+      interval: 10s
+      retries: 10
+      start_period: 10s
+    restart: always
+
+  airflow-init:
+    <<: *airflow-common
+    build:
+      context: .
+      dockerfile: docker/airflow.Dockerfile
+    pull_policy: build
+    container_name: loan-airflow-init
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        airflow db migrate
+        mkdir -p /opt/project/include /opt/airflow/logs
+        python -c "from src.data_prep import prepare_all; print(prepare_all())"
+        echo "พร้อมใช้งาน: Airflow http://localhost:8080 | MLflow http://localhost:5050 | API http://localhost:8000"
+    restart: "no"
+
+  apiserver:
+    <<: *airflow-common
+    container_name: loan-airflow-apiserver
+    command: api-server
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/version"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  scheduler:
+    <<: *airflow-common
+    container_name: loan-airflow-scheduler
+    command: scheduler
+    restart: always
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  dag-processor:
+    <<: *airflow-common
+    container_name: loan-airflow-dag-processor
+    command: dag-processor
+    restart: always
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  triggerer:
+    <<: *airflow-common
+    container_name: loan-airflow-triggerer
+    command: triggerer
+    restart: always
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  api:
+    build:
+      context: .
+      dockerfile: serving/Dockerfile
+    image: loan-mlops/api:latest
+    container_name: loan-api
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      MLFLOW_DISABLE_AGENT_HINT: "1"
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./logs/api:/app/logs/api   # log คำขอ/ผลทำนาย (JSON lines) ไว้ทำ monitoring
+      - ./include:/app/include:ro  # อ่านผล monitoring DAG ล่าสุด ส่งต่อเป็น metric ให้ Prometheus
+    depends_on:
+      mlflow:
+        condition: service_healthy
+    restart: always
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    container_name: loan-prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+    ports:
+      - "9090:9090"               # หน้า Alerts: http://localhost:9090/alerts
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/alert_rules.yml:/etc/prometheus/alert_rules.yml:ro
+      - prometheus-data:/prometheus
+    depends_on:
+      - api
+    restart: always
+
+  grafana:
+    image: grafana/grafana:12.1.0
+    container_name: loan-grafana
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"        # เปิดดูได้โดยไม่ต้องล็อกอิน (ใช้ในห้องเรียนเท่านั้น)
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/provisioning/dashboards/loan_dashboard.json
+    ports:
+      - "3000:3000"               # Dashboard: http://localhost:3000
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    restart: always
+
+volumes:
+  prometheus-data:
+  grafana-data:
+  postgres-db:
+  mlflow-data:

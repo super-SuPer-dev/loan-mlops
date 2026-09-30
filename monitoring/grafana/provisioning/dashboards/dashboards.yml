@@ -1,0 +1,8 @@
+# โหลด dashboard จากไฟล์ JSON ในโฟลเดอร์นี้อัตโนมัติ
+apiVersion: 1
+providers:
+  - name: loan
+    folder: Loan MLOps
+    type: file
+    options:
+      path: /etc/grafana/provisioning/dashboards
