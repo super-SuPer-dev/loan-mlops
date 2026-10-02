@@ -13,3 +13,4 @@ data/production/
 include/
 logs/
 .ci/
+.env
