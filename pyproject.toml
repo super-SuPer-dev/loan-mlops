@@ -16,6 +16,7 @@ dependencies = [
     "flask>=3.1",
     "prometheus-client>=0.21",
     "requests>=2.32",
+    "evidently==0.7.23",
 ]
 
 [dependency-groups]

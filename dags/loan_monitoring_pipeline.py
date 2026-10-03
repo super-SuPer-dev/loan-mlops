@@ -1,6 +1,7 @@
 """Monitoring DAG — ตรวจ batch ล่าสุด ถ้าเจอ concept drift ให้สั่ง training DAG (ปิดวงจร MLOps แบบ Lab 11)
 
 check_batch ─► send_alerts ─► needs_retrain (short circuit) ─► trigger_training
+            └► drift_report (Evidently HTML — ส่วนเสริม ล้มก็ไม่ทำให้ DAG ล้ม)
 """
 from __future__ import annotations
 
@@ -13,7 +14,7 @@ from airflow.sdk.exceptions import AirflowFailException
 
 from src import monitoring
 from src.alerts import airflow_failure_callback, send_alert
-from src.config import run_dir
+from src.config import DATA, HISTORICAL_CSV, run_dir
 from src.validation import DataValidationError
 
 DEFAULT_ARGS = {
@@ -58,6 +59,25 @@ def loan_monitoring_pipeline():
                         "roc_auc": result.get("roc_auc")})
         return result
 
+    @task(task_id="drift_report")
+    def t_drift_report(result: dict, **context) -> dict | None:
+        """รายงาน Evidently แบบ HTML ไว้ให้คนดูว่า drift ตรงไหน (ตัวเลขที่ใช้ตัดสินยังมาจาก check_batch)"""
+        import pandas as pd
+
+        from src.drift_report import build_drift_report
+        try:
+            summary = build_drift_report(
+                reference=pd.read_csv(HISTORICAL_CSV),
+                current=pd.read_csv(DATA / context["params"]["batch_file"]),
+                out_path=run_dir(context["run_id"]) / "drift_report.html",
+            )
+        except Exception as e:  # noqa: BLE001 — รายงานเป็นส่วนเสริม ห้ามทำให้การเฝ้าระวังหลักล้ม
+            print("สร้างรายงาน Evidently ไม่สำเร็จ (ข้ามได้):", e)
+            return None
+        print(f"Evidently: drift {summary['drifted_columns']}/{summary['n_columns']} คอลัมน์ "
+              f"(KS/Chi² ของเรา: {result.get('drift_share')}) → {summary['html']}")
+        return summary
+
     @task.short_circuit(task_id="needs_retrain")
     def t_needs_retrain(result: dict) -> bool:
         print("ต้อง retrain" if result["needs_retrain"] else "ยังอยู่ในเกณฑ์ ไม่ต้อง retrain")
@@ -70,7 +90,9 @@ def loan_monitoring_pipeline():
         wait_for_completion=False,
     )
 
-    result = t_send_alerts(t_check_batch())
+    checked = t_check_batch()
+    result = t_send_alerts(checked)
+    t_drift_report(checked)
     t_needs_retrain(result) >> trigger_training
 
 
