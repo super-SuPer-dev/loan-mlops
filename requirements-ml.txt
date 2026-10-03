@@ -8,3 +8,4 @@ joblib==1.6.0
 skops==0.16.0
 mlflow-skinny==3.16.1
 requests==2.34.2
+evidently==0.7.23
