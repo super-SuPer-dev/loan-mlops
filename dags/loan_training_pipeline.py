@@ -75,8 +75,8 @@ def loan_training_pipeline():
         return steps.trainer(candidate, examples, schema_path, context["run_id"])
 
     @task(task_id="select_best")
-    def t_select_best(results) -> dict:
-        return steps.select_best(list(results))
+    def t_select_best(results, examples: dict) -> dict:
+        return steps.select_best(list(results), examples)
 
     @task(task_id="evaluator")
     def t_evaluator(examples: dict, best: dict) -> dict:
@@ -131,7 +131,7 @@ def loan_training_pipeline():
     validation = t_example_validator(examples, schema)
     trained = t_trainer.partial(examples=examples, schema_path=schema).expand(candidate=list(steps.CANDIDATES))
     validation >> trained                      # ต้องผ่านด่านข้อมูลก่อนจึงเทรนได้
-    best = t_select_best(trained)
+    best = t_select_best(trained, examples)
     metrics = t_evaluator(examples, best)
     fairness = t_fairness_audit(examples, best)
     gate = t_blessing_gate(metrics)

@@ -28,7 +28,8 @@ def system(tmp_path, monkeypatch):
     monkeypatch.setattr(C, "MLFLOW_TRACKING_URI", f"sqlite:///{(tmp_path / 'mlflow.db').as_posix()}")
     monkeypatch.setattr(C, "MIN_ROC_AUC", 0.80)            # ข้อมูลสังเคราะห์ ใช้เกณฑ์ที่เหมาะกับมัน
     monkeypatch.setattr(C, "MIN_RECALL_REJECTED", 0.70)
-    monkeypatch.setattr(C, "MAX_P95_LATENCY_MS", 1000.0)   # เทสต์นี้ไม่ได้ทดสอบ latency (เครื่อง CI ช้าได้)
+    monkeypatch.setattr(C, "MAX_P95_LATENCY_MS", 5000.0)   # เทสต์นี้ไม่ได้ทดสอบ latency (เครื่อง CI ช้าได้)
+    monkeypatch.setattr(C, "LOAD_CHECK_SECONDS", 1.0)
     monkeypatch.setattr(steps, "CANDIDATES", {"logreg": steps.CANDIDATES["logreg"]})
 
     ex = steps.example_gen("seed")

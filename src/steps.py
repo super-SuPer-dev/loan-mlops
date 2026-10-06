@@ -7,6 +7,7 @@ import hashlib
 import json
 import platform
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from importlib.metadata import version
 from pathlib import Path
@@ -93,6 +94,33 @@ def latency_p95_ms(model, df: pd.DataFrame, n: int = 200) -> float:
         model.predict_proba(r)
         t.append((time.perf_counter() - t0) * 1000)
     return float(np.percentile(t, 95))
+
+
+def latency_under_load_p95_ms(model, df: pd.DataFrame, rps: float | None = None, seconds: float | None = None) -> float:
+    """p95 ของเวลาตอบ เมื่อคำขอเข้ามาตามนาฬิกาที่อัตรา rps และถูกประมวลผลพร้อมกันหลาย thread (แบบ Flask threaded)
+
+    เวลาของแต่ละคำขอนับจาก "เวลาที่ควรเข้ามา" จึงรวมเวลารอคิวด้วย — โมเดลที่ช้าลงเมื่อถูกเรียกพร้อมกัน
+    หรือประมวลผลไม่ทันอัตราเป้าหมาย จะเห็นค่าพุ่งทันที ต่างจาก latency_p95_ms ที่เรียกทีละคำขอ
+    """
+    rps = rps or C.SLO_TARGET_RPS
+    n = max(20, int(rps * (seconds or C.LOAD_CHECK_SECONDS)))
+    rows = [df.iloc[[i % len(df)]] for i in range(n)]
+    model.predict_proba(rows[0])                     # warm-up
+
+    def call(row, scheduled):
+        model.predict_proba(row)
+        return (time.perf_counter() - scheduled) * 1000
+
+    t0, futures = time.perf_counter(), []
+    with ThreadPoolExecutor(32) as pool:
+        for i, row in enumerate(rows):
+            scheduled = t0 + i / rps
+            delay = scheduled - time.perf_counter()
+            if delay > 0:
+                time.sleep(delay)
+            futures.append(pool.submit(call, row, scheduled))
+        latencies = [f.result() for f in futures]
+    return float(np.percentile(latencies, 95))
 
 
 def setup_mlflow() -> MlflowClient:
@@ -184,16 +212,23 @@ def trainer(candidate: str, examples: dict, schema_path: str, airflow_run_id: st
             "threshold": threshold, "val_roc_auc": m["roc_auc"], "p95_latency_ms": m["p95_latency_ms"]}
 
 
-def select_best(results: list[dict]) -> dict:
+def select_best(results: list[dict], examples: dict | None = None) -> dict:
     """Satisficing + Optimizing: ตัดตัวที่ช้าเกินงบ latency ทิ้งก่อน แล้วค่อยเลือก val AUC สูงสุดจากที่เหลือ
 
+    latency วัด "ที่โหลดเป้าหมายของ SLO" ทีละโมเดลตามลำดับ (ไม่วัดใน trainer เพราะ trainer รันขนานกัน จะกวนกันเอง)
+    ถ้าไม่ส่ง examples มา (เช่นเรียกจากเทสต์) จะใช้ค่าแบบทีละคำขอที่ trainer วัดไว้แทน
     ถ้า AUC ต่างกันไม่ถึง 0.003 เลือกตัวที่อยู่ก่อนใน CANDIDATES (ตัวที่ง่ายและเร็วกว่า)
     ถ้าไม่มีตัวไหนผ่านงบ latency เลย เลือกตัวที่เร็วที่สุดส่งไปให้ evaluator ตัดสิน (ซึ่งจะไม่ผ่านด่าน)
     """
     order = list(CANDIDATES)
     results = sorted(results, key=lambda r: order.index(r["candidate"]))
+    if examples is not None:
+        setup_mlflow()
+        val = pd.read_csv(examples["val"])
+        for r in results:
+            r["p95_latency_ms"] = latency_under_load_p95_ms(mlflow.sklearn.load_model(r["model_uri"]), val)
     for r in results:
-        print(f"  {r['candidate']:12s} val_auc={r['val_roc_auc']:.4f} p95={r['p95_latency_ms']:.1f}ms"
+        print(f"  {r['candidate']:12s} val_auc={r['val_roc_auc']:.4f} p95@{C.SLO_TARGET_RPS}rps={r['p95_latency_ms']:.1f}ms"
               f"{'' if r['p95_latency_ms'] <= C.MAX_P95_LATENCY_MS else '  ✗ เกินงบ latency'}")
     eligible = [r for r in results if r["p95_latency_ms"] <= C.MAX_P95_LATENCY_MS]
     if not eligible:
@@ -213,7 +248,7 @@ def evaluator(examples: dict, best: dict) -> dict:
     test = pd.read_csv(examples["test"])
     model = mlflow.sklearn.load_model(best["model_uri"])
     m = evaluate(model, test, best["threshold"])
-    m["p95_latency_ms"] = latency_p95_ms(model, test)
+    m["p95_latency_ms"] = latency_under_load_p95_ms(model, test)     # วัดที่โหลดเป้าหมายของ SLO
     size_path = Path(examples["run_dir"]) / "size_check.joblib"
     joblib.dump(model, size_path)
     m["model_size_mb"] = size_path.stat().st_size / 1e6

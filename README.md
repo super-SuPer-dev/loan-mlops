@@ -106,9 +106,13 @@ uv run python scripts/demo.py --only 4 5   # รันเฉพาะบาง�
 | Error rate (5xx) | ≤ 1% | `scripts/load_test.py`, กฎ `LoanErrorRateAboveSLO` |
 | Availability | `/health` ตอบ 200 | Docker healthcheck, กฎ `LoanApiDown` |
 
-ด่าน latency ของโมเดลผูกกับ SLO: `MAX_P95_LATENCY_MS = 1000 / (2 × 20) = 25 ms`
-เพื่อให้ API ยุ่งไม่เกิน 50% ที่โหลดเป้าหมาย และ `select_best` จะตัดโมเดลที่ช้าเกินงบนี้ทิ้งก่อนเลือกตาม AUC
-(เจอจริงระหว่างทดสอบ: HistGradientBoosting ~35 ms ต่อคำขอใน container ทำให้ p95 ของ API ขึ้นไป 195 ms)
+ด่าน latency ของโมเดลผูกกับ SLO: `MAX_P95_LATENCY_MS = SLO_P95_MS / 2 = 100 ms`
+วัดเป็น p95 **ที่โหลดเป้าหมาย 20 คำขอ/วินาที** (คำขอเข้าพร้อมกันหลาย thread แบบที่ API เจอ) อีกครึ่งของ SLO เผื่อไว้ให้ HTTP และการตรวจ schema
+`select_best` วัดทีละโมเดลแล้วตัดตัวที่เกินงบนี้ทิ้งก่อนเลือกตาม AUC
+
+ทำไมไม่วัดทีละคำขอ (เจอจริง): HistGradientBoosting วัดทีละคำขอได้ ~17 ms เร็วพอ ๆ กับ LogReg (~12 ms)
+แต่ที่ 20 คำขอ/วินาที p95 ในโปรเซสขึ้นเป็น ~150 ms (LogReg ~15 ms) และ p95 ของ API เป็น 222 ms หลุด SLO
+ด่านแบบทีละคำขอจึงปล่อยโมเดลนี้ผ่านมาได้ — เกณฑ์ที่ใช้ตัดสินต้องวัดในสภาพเดียวกับที่ให้บริการจริง
 
 เกณฑ์ทุกตัว (gate, drift, SLO) อยู่ใน [src/config.py](src/config.py) ที่เดียว
 API ส่งเกณฑ์เหล่านี้ออกเป็น metric `loan_config_threshold` ทำให้กฎของ Prometheus อ้างอิงค่าชุดเดียวกัน
