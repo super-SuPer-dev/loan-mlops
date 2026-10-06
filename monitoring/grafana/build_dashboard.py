@@ -38,14 +38,19 @@ def stat(title, expr, x, y, w=4, unit="none", th=None, desc=""):
             "options": {"colorMode": "background", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"]}}}
 
 
-def series(title, targets, x, y, w=12, h=8, unit="none", th=None, stack=False, desc=""):
+def series(title, targets, x, y, w=12, h=8, unit="none", th=None, stack=False, desc="", lo=None, hi=None):
     custom = {"lineWidth": 2, "fillOpacity": 30 if stack else 10,
               "stacking": {"mode": "normal" if stack else "none"},
               "thresholdsStyle": {"mode": "line" if th else "off"}}
+    defaults = {"unit": unit, "custom": custom, "thresholds": th or thresholds((None, "green"))}
+    # กำหนดช่วงแกนตั้งเอง: ถ้าค่าคงที่ (เช่น 0 ตลอด) Grafana จะเลือกช่วงแกนเองแล้วอ่านยาก
+    if lo is not None:
+        defaults["min"] = lo
+    if hi is not None:
+        defaults["max"] = hi
     return {"type": "timeseries", "title": title, "description": desc, "datasource": DS,
             "gridPos": {"x": x, "y": y, "w": w, "h": h}, "targets": targets,
-            "fieldConfig": {"defaults": {"unit": unit, "custom": custom,
-                                         "thresholds": th or thresholds((None, "green"))}, "overrides": []},
+            "fieldConfig": {"defaults": defaults, "overrides": []},
             "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi"}}}
 
 
@@ -110,7 +115,7 @@ panels = [
         target("max(loan_monitor_roc_auc)", "AUC batch ล่าสุด", "A"),
         target("max(loan_monitor_reference_roc_auc)", "AUC ตอน deploy", "B")], 0, 34, w=12, unit="none"),
     series("Data drift share เทียบเกณฑ์", [target("max(loan_monitor_drift_share)", "drift share")],
-           12, 34, w=12, unit="percentunit", th=thresholds((None, "green"), (0.2, "red"))),
+           12, 34, w=12, unit="percentunit", th=thresholds((None, "green"), (0.2, "red")), lo=0, hi=1),
 ]
 
 dashboard = {
