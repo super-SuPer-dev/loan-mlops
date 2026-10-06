@@ -67,13 +67,13 @@ def check_model() -> bool:
     prepare_all()
     ex = steps.example_gen("ci_model")
     schema_path = steps.schema_gen(ex)
-    best = steps.select_best([steps.trainer(c, ex, schema_path, "ci") for c in ("logreg", "hist_gboost")])
+    best = steps.select_best([steps.trainer(c, ex, schema_path, "ci") for c in ("logreg", "hist_gboost")], ex)
     m = steps.evaluator(ex, best)
     fair = steps.fairness_audit(ex, best)
     rows = [("โมเดลที่เลือก", best["candidate"]), ("threshold", best["threshold"]),
             (f"ROC-AUC (≥ {C.MIN_ROC_AUC})", f"{m['roc_auc']:.4f}"),
             (f"Recall ปฏิเสธ (≥ {C.MIN_RECALL_REJECTED})", f"{m['recall_rejected']:.4f}"),
-            (f"p95 latency ms (≤ {C.MAX_P95_LATENCY_MS})", f"{m['p95_latency_ms']:.2f}"),
+            (f"p95 latency ms ที่ {C.SLO_TARGET_RPS} คำขอ/วินาที (≤ {C.MAX_P95_LATENCY_MS:g})", f"{m['p95_latency_ms']:.2f}"),
             (f"ขนาดโมเดล MB (≤ {C.MAX_MODEL_SIZE_MB})", f"{m['model_size_mb']:.3f}"),
             (f"Fairness: ส่วนต่างอัตราอนุมัติ (≤ {C.MAX_APPROVAL_GAP})", fair["gap"])]
     rows += [(f"ด่าน {k}", "ผ่าน" if v else "ไม่ผ่าน") for k, v in m["checks"].items()]
